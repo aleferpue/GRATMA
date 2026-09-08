@@ -42,39 +42,24 @@ Cambios respecto a GRATMA_random_mejorado.py:
   7. La cabecera de cada TXT incluye además los puertos que estaban midiendo
      en paralelo, para poder rastrear las medidas simultáneas.
 
-  8. PROTECCIÓN CONTRA SOBRESCRITURA. Antes de medir, se comprueba si los TXT
-     definitivos que generaría cada equipo ya existen en su carpeta de chip.
-     Si es así, ese equipo se SALTA (no se mide) y se avisa, mientras el resto
-     continúa. Como red de seguridad, la escritura del TXT definitivo se hace
-     en modo exclusivo, de modo que es imposible pisar un archivo existente.
-
-  9. GENERACIÓN AUTOMÁTICA DE GRÁFICAS. Al terminar toda la medida, se importa
-     gratma_graph_para_todos.py (debe estar en la misma carpeta) y se generan
-     las gráficas de cada chip dentro de:
-
-       FOLDER_PATH / Chip / graficas_GRATMA /
-
-     Las gráficas se generan en el hilo principal, ya terminadas todas las
-     medidas, porque matplotlib no es seguro entre hilos. Si el módulo de
-     gráficas o sus dependencias (numpy, matplotlib) no están disponibles, la
-     medida se completa igualmente y solo se omite este paso.
+  8. El TXT definitivo se construye con los valores REALES que devuelve el
+     GRATMA para Vfg, Vs, Ig e Is. No se renombra Id como Vs.
 """
 
 import argparse
 import os
 import random
 import re
-import sys
 import threading
 import time
 from datetime import datetime
-from pathlib import Path
 
 import serial
 
 
-FOLDER_PATH = (r"C:\Users\alefe\Nextcloud\Clean_Room\Biosensors Elsauli\GRATMAs comparison\prueba gratma nuevo")
- # Se cambia con respecto al PC que lo use.
+FOLDER_PATH = (
+    r"C:\Users\rodri\OneDrive\Escritorio\GRATMA\gratma_aging"   # Se cambia con respecto al PC que lo use.
+)
 
 # ==================== Información de sensores ====================
 NSENSOR = [1, 2, 3, 4, 5, 6, 7, 8]
@@ -85,48 +70,20 @@ VGINIT = 0       # Vg inicial (mV)
 VGEND = 1200     # Vg final (mV)
 VGSWEEP = 15     # Paso de Vg (mV)
 FBWD = 1         # 0: solo forward | 1: forward + backward
-NUM_REP = 1      # Secuencias sobre todos los sensores
+NUM_REP = 5      # Secuencias sobre todos los sensores
 
 # ==================== Tiempos y modo ====================
-STABILIZE_S = 1
+STABILIZE_S = 600  #Antes estaba a 180
 BETWEEN_SENSORS_S = 10
 GND_UNSELECTED = True
 
 # ==================== Identificación de los archivos ====================
 MEASUREMENT_MODE = "random"
 ELECTROLYTE = "PB-S0_01"
+MEASUREMENT_STAGE = "aging"  # Identifica que estas medidas corresponden a chips envejecidos.
 BAUDRATE = 115200
 SERIAL_TIMEOUT_S = 1
-MEASUREMENT_TIMEOUT_S = 100
-
-# ==================== Reintentos ante fallos ====================
-# Número total de intentos permitidos para un mismo sensor. El programa solo
-# pasa al siguiente sensor cuando la medida actual ha terminado correctamente.
-MAX_SENSOR_ATTEMPTS = 5
-RETRY_DELAY_S = 5
-
-# ==================== Gráficas automáticas ====================
-GENERAR_GRAFICAS = True             # False para no generar gráficas al terminar.
-CARPETA_GRAFICAS = "graficas_GRATMA"  # Subcarpeta de salida dentro de cada chip.
-
-# ==================== Aviso sonoro ====================
-SONIDO_AL_TERMINAR = True           # False para no emitir sonido al terminar.
-
-
-# -----------------------------------------------------------------
-# Integración opcional con el generador de gráficas
-# -----------------------------------------------------------------
-# Se importa gratma_graph_para_todos.py como módulo. Debe estar en la misma
-# carpeta que este script. Si falta el módulo o sus dependencias (numpy,
-# matplotlib), 'graficador' queda a None y la medida funciona igualmente.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-try:
-    import matplotlib
-
-    matplotlib.use("Agg")   # Backend sin ventanas: solo guarda PNG en disco.
-    import GRATMA_graphics as graficador
-except (Exception, SystemExit):
-    graficador = None
+MEASUREMENT_TIMEOUT_S = 300 
 
 
 # -----------------------------------------------------------------
@@ -179,16 +136,6 @@ def parse_arguments():
     parser.add_argument(
         "--folder",
         help="Carpeta de salida. Si se omite se usa la definida en el código.",
-    )
-    parser.add_argument(
-        "--no-graficas",
-        action="store_true",
-        help="No generar las gráficas automáticamente al terminar.",
-    )
-    parser.add_argument(
-        "--no-sonido",
-        action="store_true",
-        help="No emitir el aviso sonoro al terminar.",
     )
     return parser.parse_args()
 
@@ -243,9 +190,7 @@ def build_device(port, wafer, chip_input):
         "chip": normalize_chip_name(wafer, chip_input),
         "serial": None,
         "output_folder": None,
-        "graficas_folder": None,
         "saved_files": 0,
-        "skip": False,
         "error": None,
     }
 
@@ -329,12 +274,7 @@ def get_runtime_configuration(args):
         os.path.expanduser(args.folder if args.folder else FOLDER_PATH)
     )
 
-    return {
-        "devices": devices,
-        "folder_path": folder_path,
-        "generar_graficas": GENERAR_GRAFICAS and not args.no_graficas,
-        "reproducir_sonido": SONIDO_AL_TERMINAR and not args.no_sonido,
-    }
+    return {"devices": devices, "folder_path": folder_path}
 
 
 # -----------------------------------------------------------------
@@ -365,6 +305,7 @@ def build_measurement_metadata(
         "numero_secuencias_total": NUM_REP,
         "orden_aleatorio_secuencia": ",".join(map(str, random_order)),
         "modo_medida": MEASUREMENT_MODE,
+        "tipo_medida": MEASUREMENT_STAGE,
         "electrolito": ELECTROLYTE,
         "VD_mV": VD,
         "VGINIT_mV": VGINIT,
@@ -410,7 +351,7 @@ def build_measurement_filename(
     electrolyte = sanitize_filename_component(electrolyte)
 
     return (
-        f"{wafer}_{chip}_Array{sensor}_{MEASUREMENT_MODE}_"
+        f"{wafer}_{chip}_{MEASUREMENT_STAGE}_Array{sensor}_{MEASUREMENT_MODE}_"
         f"{sequence}_{electrolyte}.txt"
     )
 
@@ -424,36 +365,8 @@ def build_temporary_txt_filename(final_filename):
 def build_chip_folder_path(base_folder_path, chip):
     """Construye la carpeta de salida propia de un chip."""
     chip_folder_name = sanitize_filename_component(chip)
+    chip_folder_name = f"{chip_folder_name}_{MEASUREMENT_STAGE}"
     return os.path.join(base_folder_path, chip_folder_name)
-
-
-def expected_output_filenames(device):
-    """Lista de TXT definitivos que generaría un equipo en toda la medida."""
-    names = []
-    for sequence in range(1, NUM_REP + 1):
-        for sensor in NSENSOR:
-            names.append(
-                build_measurement_filename(
-                    wafer=device["wafer"],
-                    chip=device["chip"],
-                    sensor=sensor,
-                    sequence=sequence,
-                )
-            )
-    return names
-
-
-def find_existing_outputs(device, folder_path):
-    """Devuelve los TXT definitivos que YA existen para este equipo."""
-    chip_folder = build_chip_folder_path(folder_path, device["chip"])
-    if not os.path.isdir(chip_folder):
-        return []
-
-    existing = []
-    for name in expected_output_filenames(device):
-        if os.path.exists(os.path.join(chip_folder, name)):
-            existing.append(name)
-    return existing
 
 
 # -----------------------------------------------------------------
@@ -537,18 +450,6 @@ def random_sequence_order(sensors, rng=random):
     return order
 
 
-def expected_measurement_points(vginit, vgend, vgsweep, fbwd, rep):
-    """Calcula el número de puntos esperado para validar una medida IV."""
-    if vgsweep == 0:
-        raise ValueError("VGSWEEP no puede ser 0.")
-
-    points_per_direction = int(
-        round(abs(vgend - vginit) / abs(vgsweep))
-    ) + 1
-    directions = 2 if fbwd else 1
-    return points_per_direction * directions * max(1, int(rep))
-
-
 def read_serial_to_file(
     ser,
     vd,
@@ -563,17 +464,13 @@ def read_serial_to_file(
     folder_path,
     metadata=None,
     tag=None,
-    verbose=True, #para debug, si es False no imprime nada en consola
+    verbose=True,
 ):
-    """Envía el comando IV, guarda la respuesta y valida la medida.
+    """Envía el comando IV y guarda la respuesta COMPLETA del GRATMA en un TXT.
 
-    Una medida solo se considera correcta si:
-      1. llega el mensaje de finalización del firmware;
-      2. no aparece ningún error explícito del firmware;
-    
-
-    Devuelve un diccionario con el estado completo para decidir si hay que
-    guardar la medida o repetir exactamente el mismo sensor.
+    Este archivo temporal conserva todas las líneas que devuelve el equipo.
+    Los valores definitivos Vfg, Vs, Ig e Is se extraen después directamente
+    de las líneas de medida del GRATMA; no se renombra Id como Vs.
     """
     value = sensor_bitmask(sensor)
     iv_command = (
@@ -592,31 +489,49 @@ def read_serial_to_file(
 
     current_file = os.path.join(folder_path, output_file)
 
-    def parse_point(line_text):
-        columns = line_text.split(";")
-        if len(columns) != 4:
-            return None
-        try:
-            return float(columns[0]), float(columns[1])
-        except ValueError:
-            return None
-
-    progress_point_pattern = re.compile(
-        r"^\((?:GRATMA|IV_SWEEP)\) Sensor \d+ Point \d+"
+    # Formato real observado en la consola del GRATMA, por ejemplo:
+    # (IV_SWEEP) Sensor 1 Point 1 (rep 1):
+    # Vfg = 0.0003934V, Is = 0.0009384A, Vs = 0.0499556V, Ig = ...
+    number = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
+    real_point_pattern = re.compile(
+        rf"Sensor\s+(\d+)\s+Point\s+\d+"
+        rf"(?:\s+\(rep(?:=|\s+)\d+\))?\s*:\s*"
+        rf"Vfg\s*=\s*({number})V,\s*"
+        rf"Is\s*=\s*({number})A,\s*"
+        rf"Vs\s*=\s*({number})V,\s*"
+        rf"Ig\s*=\s*({number})A",
+        flags=re.IGNORECASE,
     )
-    explicit_error_pattern = re.compile(
-        r"(?:^|\))\s*ERROR\s*:",
+    data_point_pattern = re.compile(
+        rf"DATA\s+type=1\s+sensor=S(\d+)\s+rep=\d+\s+"
+        rf"(?:fwd|bwd)\s+seq=\S+\s+"
+        rf"({number})\s+({number})\s+({number})\s+({number})",
         flags=re.IGNORECASE,
     )
 
-    numeric_points = 0
-    progress_points = 0
+    def parse_vfg(line_text):
+        """Devuelve Vfg de un punto real, únicamente para contar el progreso."""
+        match = real_point_pattern.search(line_text)
+        if match and int(match.group(1)) == sensor:
+            return float(match.group(2))
+
+        # Formato DATA: Vfg, Is, Vs, Ig.
+        match = data_point_pattern.search(line_text)
+        if match and int(match.group(1)) == sensor:
+            return float(match.group(2))
+
+        # Compatibilidad para contar puntos si el firmware emite una tabla
+        # numérica de cuatro columnas. Aquí NO se interpreta la 2.ª como Vs.
+        columns = line_text.split(";")
+        if len(columns) == 4:
+            try:
+                return float(columns[0])
+            except ValueError:
+                pass
+        return None
+
+    number_of_points = 0
     max_vg = None
-    dirac_vg = None
-    min_abs_id = None
-    firmware_errors = []
-    completion_received = False
-    timed_out = False
 
     with open(current_file, "w", encoding="utf-8") as file_object:
         # La cabecera se añade también al All_info para que todos los TXT
@@ -630,144 +545,42 @@ def read_serial_to_file(
             if line:
                 file_object.write(line + "\n")
                 last_data_time = time.time()
+                vg = parse_vfg(line)
 
-                line_lower = line.lower()
-                is_firmware_error = (
-                    explicit_error_pattern.search(line) is not None
-                    or "calibration failed" in line_lower
-                    or "measurement failed" in line_lower
-                    or "measurement aborted" in line_lower
-                    or "sweep aborted" in line_lower
-                )
-                if is_firmware_error and line not in firmware_errors:
-                    firmware_errors.append(line)
-
-                progress_match = progress_point_pattern.match(line)
-                new_point_received = False
-                if progress_match:
-                    progress_points += 1
-                    new_point_received = True
-
-                point = parse_point(line)
-                if point is not None:
-                    numeric_points += 1
-                    new_point_received = True
-                    vg, drain_current = point
-
+                if vg is not None:
+                    number_of_points += 1
                     if max_vg is None or vg > max_vg:
                         max_vg = vg
-                    if min_abs_id is None or abs(drain_current) < min_abs_id:
-                        min_abs_id = abs(drain_current)
-                        dirac_vg = vg
 
-                number_of_points = max(numeric_points, progress_points)
-                if (
-                    verbose
-                    and new_point_received
-                    and number_of_points % 25 == 0
-                ):
-                    log(f"      ... {number_of_points} puntos recibidos", tag)
-                elif verbose and not new_point_received:
+                    if verbose and number_of_points % 25 == 0:
+                        log(
+                            f"      ... {number_of_points} puntos "
+                            f"(Vfg≈{vg:.4g})",
+                            tag,
+                        )
+                elif verbose:
                     log(f"      · {line}", tag)
             elif time.time() - last_data_time > timeout:
-                timed_out = True
                 if verbose:
-                    log("[WARN] timeout esperando datos — corto la lectura", tag)
+                    log("      [WARN] timeout esperando datos — corto la lectura", tag)
                 break
 
             if line == "(GRATMA) Measurement sweep completed":
-                completion_received = True
                 break
-
-            if "(MEAS_MGR) Measurement OK - result ready" in line:
-                completion_received = True
-                break
-
-    number_of_points = max(numeric_points, progress_points)
-    expected_points = expected_measurement_points(
-        vginit=vginit,
-        vgend=vgend,
-        vgsweep=vgsweep,
-        fbwd=fbwd,
-        rep=rep,
-    )
-
-    failure_reasons = []
-    if timed_out:
-        failure_reasons.append("timeout de comunicación")
-    if not completion_received:
-        failure_reasons.append("no llegó el mensaje de fin de medida")
-    if firmware_errors:
-        failure_reasons.append("el firmware notificó un error")
-    
-
-    success = not failure_reasons
 
     if verbose:
-        extra = ""
-        if max_vg is not None:
-            extra = f" | Vfg_max={max_vg:.4g}"
-            if dirac_vg is not None:
-                extra += f" | min|Id| en Vfg={dirac_vg:.4g}"
-
-        status = "OK" if success else "FALLIDA"
+        extra = f" | Vfg_max={max_vg:.4g}" if max_vg is not None else ""
         log(
-            f"    -> Medida {status}: {number_of_points}/{expected_points} "
-            f"puntos en {output_file}{extra}",
+            f"    -> {number_of_points} puntos detectados y guardados "
+            f"en {output_file}{extra}",
             tag,
         )
-        for error_line in firmware_errors:
-            log(f"    [ERROR FIRMWARE] {error_line}", tag)
-        if failure_reasons:
-            log(f"    Motivo: {'; '.join(failure_reasons)}", tag)
 
-    return {
-        "success": success,
-        "number_of_points": number_of_points,
-        "expected_points": expected_points,
-        "completion_received": completion_received,
-        "timed_out": timed_out,
-        "firmware_errors": firmware_errors,
-        "failure_reasons": failure_reasons,
-        "temporary_path": current_file,
-    }
-
-
-def archive_failed_temporary_file(
-    folder_path,
-    temporary_filename,
-    attempt,
-    reason="FAILED",
-):
-    """Renombra el All_info fallido para conservarlo antes del reintento."""
-    source_path = os.path.join(folder_path, temporary_filename)
-    if not os.path.exists(source_path):
-        return None
-
-    safe_reason = sanitize_filename_component(reason).upper()
-    stem, extension = os.path.splitext(temporary_filename)
-    candidate_name = f"{safe_reason}_attempt{attempt}_{stem}{extension}"
-    candidate_path = os.path.join(folder_path, candidate_name)
-
-    counter = 2
-    while os.path.exists(candidate_path):
-        candidate_name = (
-            f"{safe_reason}_attempt{attempt}_{stem}_{counter}{extension}"
-        )
-        candidate_path = os.path.join(folder_path, candidate_name)
-        counter += 1
-
-    os.replace(source_path, candidate_path)
-    return candidate_name
+    return number_of_points
 
 def save_clean_measurement(output_path, metadata, data_buffer):
-    """Guarda un TXT limpio con parámetros, columnas y datos numéricos.
-
-    Se abre en modo exclusivo ("x"): si el archivo ya existe, Python lanza
-    FileExistsError y NO se sobrescribe nada. Es la red de seguridad última
-    contra la pérdida de datos.
-    """
-    with open(output_path, "x", encoding="utf-8") as output_file:
+    """Guarda un TXT limpio con parámetros, columnas y datos numéricos."""
+    with open(output_path, "w", encoding="utf-8") as output_file:
         write_metadata(output_file, metadata)
         output_file.write("\n".join(data_buffer) + "\n")
 
@@ -782,43 +595,54 @@ def split_txt_by_reps(
     metadata=None,
     tag=None,
 ):
-    """Extrae Vfg;Id;Ig;Is y crea el TXT definitivo de la medida."""
+    """Crea el TXT final con los valores REALES Vfg;Vs;Ig;Is del GRATMA.
+
+    Prioridad de extracción:
+      1. Líneas de medida del propio GRATMA/IV_SWEEP con Vfg, Is, Vs e Ig.
+      2. Líneas DATA type=1, cuyo formato de sweep es Vfg, Is, Vs, Ig.
+      3. Tabla ya etiquetada explícitamente como Vfg;Vs;Ig;Is.
+
+    Deliberadamente NO se convierte una tabla Vfg;Id;Ig;Is a Vs: si solo
+    existe esa tabla, se conserva el All_info temporal y se avisa, porque
+    renombrar Id como Vs produciría datos incorrectos.
+    """
     os.makedirs(folder_path, exist_ok=True)
 
     input_path = os.path.join(folder_path, input_filename)
-
     with open(input_path, "r", encoding="utf-8", errors="ignore") as input_file:
         lines = input_file.readlines()
 
-    repetition = None
-    collecting = False
-    data_buffer = []
-    saved_filename = None
-
     number = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
+
+    # Ejemplos admitidos:
+    # (GRATMA) Sensor 4 Point 2: Vfg = ..., Is = ..., Vs = ..., Ig = ...
+    # (IV_SWEEP) Sensor 1 Point 1 (rep 1): Vfg = ..., Is = ..., Vs = ..., Ig = ...
+    real_point_pattern = re.compile(
+        rf"Sensor\s+(\d+)\s+Point\s+\d+"
+        rf"(?:\s+\(rep(?:=|\s+)(\d+)\))?\s*:\s*"
+        rf"Vfg\s*=\s*({number})V,\s*"
+        rf"Is\s*=\s*({number})A,\s*"
+        rf"Vs\s*=\s*({number})V,\s*"
+        rf"Ig\s*=\s*({number})A",
+        flags=re.IGNORECASE,
+    )
+
+    # Formato de recuperación observado para sweep:
+    # DATA type=1 sensor=S1 rep=1 fwd seq=0 Vfg Is Vs Ig
+    data_point_pattern = re.compile(
+        rf"DATA\s+type=1\s+sensor=S(\d+)\s+rep=(\d+)\s+"
+        rf"(?:fwd|bwd)\s+seq=\S+\s+"
+        rf"({number})\s+({number})\s+({number})\s+({number})",
+        flags=re.IGNORECASE,
+    )
+
     numeric_line_pattern = re.compile(
         rf"^{number};{number};{number};{number}$"
     )
 
-    alt_line_pattern = re.compile(
-        rf"\(IV_SWEEP\) Sensor (\d+) Point \d+ \(rep (\d+)\): "
-        rf"Vfg = ({number})V, Is = ({number})A, Vs = ({number})V, "
-        rf"Ig = ({number})A"
-    )
-
-    def save_current_block(current_repetition, current_buffer):
-        nonlocal saved_filename
-
-        if current_repetition is None or not current_buffer:
-            return
-
-        if saved_filename is not None:
-            log(
-                "    [WARN] Se ha encontrado más de un bloque de datos; "
-                "solo se conserva el primero.",
-                tag,
-            )
-            return
+    def save_buffer(data_buffer, source_description):
+        if len(data_buffer) <= 1:
+            return None
 
         output_filename = build_measurement_filename(
             wafer=wafer,
@@ -827,94 +651,102 @@ def split_txt_by_reps(
             sequence=sequence,
         )
         output_path = os.path.join(folder_path, output_filename)
+        save_clean_measurement(output_path, metadata, data_buffer)
+        log(
+            f"    Guardado: {output_filename} "
+            f"[{len(data_buffer) - 1} puntos; {source_description}]",
+            tag,
+        )
+        return output_filename
 
-        try:
-            save_clean_measurement(output_path, metadata, current_buffer)
-        except FileExistsError:
-            # No debería ocurrir gracias a la comprobación previa, pero si
-            # ocurre se protege el dato: no se sobrescribe y se conserva el
-            # TXT temporal para no perder la medida.
-            log(
-                f"    [SEGURIDAD] {output_filename} ya existe; NO se "
-                "sobrescribe. Se conserva el TXT temporal con los datos.",
-                tag,
-            )
-            return
+    # ------------------------------------------------------------------
+    # 1) Preferencia absoluta: valores nombrados por el propio GRATMA.
+    # ------------------------------------------------------------------
+    real_buffer = ["Vfg;Vs;Ig;Is"]
+    for line in lines:
+        match = real_point_pattern.search(line)
+        if not match:
+            continue
 
-        saved_filename = output_filename
-        log(f"    Guardado: {output_filename}", tag)
+        sensor_found = int(match.group(1))
+        if sensor_found != sensor:
+            continue
+
+        # Orden recibido: Vfg, Is, Vs, Ig.
+        # Orden guardado:  Vfg, Vs, Ig, Is.
+        vfg_value = match.group(3)
+        is_value = match.group(4)
+        vs_value = match.group(5)
+        ig_value = match.group(6)
+        real_buffer.append(
+            f"{vfg_value};{vs_value};{ig_value};{is_value}"
+        )
+
+    if len(real_buffer) > 1:
+        return save_buffer(real_buffer, "Vs real de línea GRATMA/IV_SWEEP")
+
+    # ------------------------------------------------------------------
+    # 2) Fallback seguro: líneas DATA del sweep (Vfg, Is, Vs, Ig).
+    # ------------------------------------------------------------------
+    data_buffer = ["Vfg;Vs;Ig;Is"]
+    for line in lines:
+        match = data_point_pattern.search(line)
+        if not match:
+            continue
+
+        sensor_found = int(match.group(1))
+        if sensor_found != sensor:
+            continue
+
+        vfg_value = match.group(3)
+        is_value = match.group(4)
+        vs_value = match.group(5)
+        ig_value = match.group(6)
+        data_buffer.append(
+            f"{vfg_value};{vs_value};{ig_value};{is_value}"
+        )
+
+    if len(data_buffer) > 1:
+        return save_buffer(data_buffer, "Vs real de línea DATA")
+
+    # ------------------------------------------------------------------
+    # 3) Solo se acepta una tabla si YA declara explícitamente Vs.
+    #    Nunca se renombra una tabla con Id.
+    # ------------------------------------------------------------------
+    table_buffer = []
+    collecting = False
 
     for line in lines:
         stripped_line = line.strip()
 
-        sensor_match = re.match(
-            r"\(GRATMA\) Sensor (\d+) \(rep=(\d+)\)",
-            stripped_line,
-        )
-        if sensor_match:
-            sensor_found = int(sensor_match.group(1))
-            repetition = int(sensor_match.group(2))
-            collecting = sensor_found == sensor
-            data_buffer = []
-            continue
-
-        if stripped_line == "Vfg;Id;Ig;Is" and repetition is not None:
-            data_buffer = [stripped_line]
+        if stripped_line == "Vfg;Vs;Ig;Is":
+            table_buffer = ["Vfg;Vs;Ig;Is"]
             collecting = True
             continue
 
         if collecting:
             if numeric_line_pattern.fullmatch(stripped_line):
-                data_buffer.append(stripped_line)
+                table_buffer.append(stripped_line)
             else:
-                save_current_block(repetition, data_buffer)
-                collecting = False
-                data_buffer = []
+                break
 
-    # Guarda el último bloque si el archivo termina justo después de los datos.
-    if collecting and data_buffer:
-        save_current_block(repetition, data_buffer)
+    if len(table_buffer) > 1:
+        return save_buffer(table_buffer, "tabla Vs explícita del GRATMA")
 
-    # Si no se ha encontrado el bloque "Vfg;Id;Ig;Is", se recurre al formato
-    # alternativo de líneas de progreso IV_SWEEP para reconstruir los datos.
-    if saved_filename is None:
-        alt_repetition = None
-        alt_buffer = []
-
-        for line in lines:
-            alt_match = alt_line_pattern.search(line)
-            if not alt_match:
-                continue
-
-            sensor_found = int(alt_match.group(1))
-            if sensor_found != sensor:
-                continue
-
-            rep_found = int(alt_match.group(2))
-            vfg_value, is_value, vs_value, ig_value = alt_match.group(3, 4, 5, 6)
-
-            if not alt_buffer:
-                alt_repetition = rep_found
-                alt_buffer = ["Vfg;Vs;Ig;Is"]
-
-            alt_buffer.append(f"{vfg_value};{vs_value};{ig_value};{is_value}")
-
-        if alt_buffer:
-            save_current_block(alt_repetition, alt_buffer)
-
-    return saved_filename
+    log(
+        "    [WARN] No se han encontrado valores Vs reales en la salida del "
+        "GRATMA. NO se ha renombrado Id como Vs. Se conserva el TXT temporal "
+        f"para revisión: {input_filename}",
+        tag,
+    )
+    return None
 
 
 # -----------------------------------------------------------------
 # Hilo de medida de un equipo
 # -----------------------------------------------------------------
 def measure_device(device, parallel_ports):
-    """Ejecuta todas las secuencias de un equipo. Se lanza en un hilo propio.
-
-    Cada sensor se repite hasta obtener una medida completa y sin errores. Si
-    se agotan MAX_SENSOR_ATTEMPTS, el equipo se detiene en ese sensor y no pasa
-    al siguiente; los demás puertos continúan de forma independiente.
-    """
+    """Ejecuta todas las secuencias de un equipo. Se lanza en un hilo propio."""
     tag = device["port"]
     wafer = device["wafer"]
     chip = device["chip"]
@@ -959,6 +791,16 @@ def measure_device(device, parallel_ports):
                     tag,
                 )
 
+                metadata = build_measurement_metadata(
+                    port=device["port"],
+                    wafer=wafer,
+                    chip=chip,
+                    sensor=sensor,
+                    sequence=sequence,
+                    random_order=order,
+                    parallel_ports=parallel_ports,
+                )
+
                 final_filename = build_measurement_filename(
                     wafer=wafer,
                     chip=chip,
@@ -969,144 +811,47 @@ def measure_device(device, parallel_ports):
                     final_filename
                 )
 
-                sensor_completed = False
-                last_failure = "motivo desconocido"
+                read_serial_to_file(
+                    ser=serial_connection,
+                    vd=VD,
+                    vginit=VGINIT,
+                    vgend=VGEND,
+                    vgsweep=VGSWEEP,
+                    sensor=sensor,
+                    fbwd=FBWD,
+                    rep=1,
+                    output_file=temporary_txt_filename,
+                    timeout=MEASUREMENT_TIMEOUT_S,
+                    folder_path=chip_folder_path,
+                    metadata=metadata,
+                    tag=tag,
+                )
 
-                for attempt in range(1, MAX_SENSOR_ATTEMPTS + 1):
-                    log(
-                        f"    [INTENTO {attempt}/{MAX_SENSOR_ATTEMPTS}] "
-                        f"S{sensor}, secuencia {sequence}",
-                        tag,
-                    )
-
-                    metadata = build_measurement_metadata(
-                        port=device["port"],
+                try:
+                    saved_filename = split_txt_by_reps(
                         wafer=wafer,
                         chip=chip,
                         sensor=sensor,
                         sequence=sequence,
-                        random_order=order,
-                        parallel_ports=parallel_ports,
-                    )
-                    metadata["intento_sensor"] = attempt
-                    metadata["max_intentos_sensor"] = MAX_SENSOR_ATTEMPTS
-
-                    measurement_result = read_serial_to_file(
-                        ser=serial_connection,
-                        vd=VD,
-                        vginit=VGINIT,
-                        vgend=VGEND,
-                        vgsweep=VGSWEEP,
-                        sensor=sensor,
-                        fbwd=FBWD,
-                        rep=1,
-                        output_file=temporary_txt_filename,
-                        timeout=MEASUREMENT_TIMEOUT_S,
+                        input_filename=temporary_txt_filename,
                         folder_path=chip_folder_path,
                         metadata=metadata,
                         tag=tag,
                     )
 
-                    if not measurement_result["success"]:
-                        last_failure = "; ".join(
-                            measurement_result["failure_reasons"]
+                    if saved_filename is not None:
+                        device["saved_files"] += 1
+                        temporary_txt_path = os.path.join(
+                            chip_folder_path,
+                            temporary_txt_filename,
                         )
-                        archived_name = archive_failed_temporary_file(
-                            folder_path=chip_folder_path,
-                            temporary_filename=temporary_txt_filename,
-                            attempt=attempt,
-                            reason="FAILED_MEASUREMENT",
-                        )
-                        if archived_name:
-                            log(
-                                f"    [DIAGNÓSTICO] Intento fallido guardado "
-                                f"como: {archived_name}",
-                                tag,
-                            )
-                    else:
-                        try:
-                            saved_filename = split_txt_by_reps(
-                                wafer=wafer,
-                                chip=chip,
-                                sensor=sensor,
-                                sequence=sequence,
-                                input_filename=temporary_txt_filename,
-                                folder_path=chip_folder_path,
-                                metadata=metadata,
-                                tag=tag,
-                            )
-                        except Exception as error:
-                            saved_filename = None
-                            last_failure = f"error procesando el TXT: {error}"
-                            log(
-                                f"    [WARN] split_txt_by_reps falló: {error}",
-                                tag,
-                            )
-
-                        if saved_filename is not None:
-                            device["saved_files"] += 1
-                            temporary_txt_path = os.path.join(
-                                chip_folder_path,
-                                temporary_txt_filename,
-                            )
-                            try:
-                                os.remove(temporary_txt_path)
-                            except FileNotFoundError:
-                                pass
-
-                            sensor_completed = True
-                            log(
-                                f"    [OK] S{sensor}, secuencia {sequence} "
-                                f"completado en el intento {attempt}.",
-                                tag,
-                            )
-                            break
-
-                        if last_failure == "motivo desconocido":
-                            last_failure = (
-                                "la medida terminó, pero no se pudo crear "
-                                "el TXT definitivo"
-                            )
-                        archived_name = archive_failed_temporary_file(
-                            folder_path=chip_folder_path,
-                            temporary_filename=temporary_txt_filename,
-                            attempt=attempt,
-                            reason="FAILED_PROCESSING",
-                        )
-                        if archived_name:
-                            log(
-                                f"    [DIAGNÓSTICO] TXT conservado como: "
-                                f"{archived_name}",
-                                tag,
-                            )
-
-                    if attempt < MAX_SENSOR_ATTEMPTS:
-                        log(
-                            f"    [REINTENTO] Se repetirá S{sensor} en "
-                            f"{RETRY_DELAY_S}s. No se pasa al siguiente sensor.",
-                            tag,
-                        )
-                        countdown_sleep(
-                            RETRY_DELAY_S,
-                            label="reintento: ",
-                            tag=tag,
-                        )
-
-                        # Se vuelve a establecer el modo de sensores no medidos
-                        # a tierra antes de iniciar el nuevo intento.
-                        if GND_UNSELECTED:
-                            send_cmd(
-                                serial_connection,
-                                "um 1",
-                                tag=tag,
-                                verbose=False,
-                            )
-
-                if not sensor_completed:
-                    raise RuntimeError(
-                        f"S{sensor}, secuencia {sequence}, falló tras "
-                        f"{MAX_SENSOR_ATTEMPTS} intentos: {last_failure}. "
-                        "El equipo se detiene sin pasar al siguiente sensor."
+                        # os.remove(temporary_txt_path)
+                except Exception as error:
+                    log(f"    [WARN] split_txt_by_reps falló: {error}", tag)
+                    log(
+                        "    El TXT temporal se conserva para poder "
+                        f"recuperar los datos: {temporary_txt_filename}",
+                        tag,
                     )
 
     except Exception as error:
@@ -1115,127 +860,6 @@ def measure_device(device, parallel_ports):
         log(f"[ERROR] Medida interrumpida en este equipo: {error}", tag)
 
     log("Equipo terminado.", tag)
-
-
-# -----------------------------------------------------------------
-# Generación de gráficas al terminar
-# -----------------------------------------------------------------
-def _graficar_carpeta_chip(chip_folder):
-    """Genera las gráficas de la carpeta de un chip usando el módulo importado.
-
-    Devuelve la carpeta de salida usada, o None si no había datos válidos.
-    Reutiliza las funciones de gratma_graph_para_todos sin abrir ventanas.
-    """
-    medidas = graficador.localizar_medidas(chip_folder)
-    if not medidas:
-        return None
-
-    curvas, _ = graficador.cargar_curvas(medidas)
-    if not curvas:
-        return None
-
-    salida = os.path.join(chip_folder, CARPETA_GRAFICAS)
-    os.makedirs(salida, exist_ok=True)
-    salida_path = Path(salida)
-
-    titulo = graficador.extraer_titulo_muestra_dirac(curvas)
-    repeticiones = sorted({c["rep"] for c in curvas})
-    n_ultimas = min(graficador.NUM_ULTIMAS_REPETICIONES, len(repeticiones))
-    ultimas = repeticiones[-n_ultimas:] if n_ultimas else repeticiones
-
-    graficador.comprobar_repeticiones(curvas, repeticiones)
-
-    graficador.generar_grupo(
-        curvas,
-        repeticiones,
-        f"{len(repeticiones)} repeticiones "
-        f"({', '.join(map(str, repeticiones))})",
-        "01_todas_repeticiones",
-        salida_path,
-        titulo,
-    )
-    graficador.generar_grupo(
-        curvas,
-        ultimas,
-        f"últimas {len(ultimas)} repeticiones "
-        f"({', '.join(map(str, ultimas))})",
-        f"02_ultimas_{len(ultimas)}_repeticiones",
-        salida_path,
-        titulo,
-    )
-
-    return salida
-
-
-def generar_graficas_de_equipos(devices, generar_graficas):
-    """Genera las gráficas de cada chip medido, en el hilo principal."""
-    if not generar_graficas:
-        return
-
-    if graficador is None:
-        print(
-            "\n[GRAFICAS] Módulo de gráficas no disponible (falta numpy/"
-            "matplotlib o gratma_graph_para_todos.py en esta carpeta). "
-            "Se omite la generación de gráficas."
-        )
-        return
-
-    pendientes = [
-        device
-        for device in devices
-        if device.get("output_folder") and device.get("saved_files", 0) > 0
-    ]
-    if not pendientes:
-        return
-
-    print("\n" + "=" * 62)
-    print("GENERACIÓN DE GRÁFICAS")
-    print("=" * 62)
-
-    for device in pendientes:
-        chip_folder = device["output_folder"]
-        try:
-            log(f"[GRAFICAS] Generando gráficas del chip {device['chip']} ...",
-                device["port"])
-            salida = _graficar_carpeta_chip(chip_folder)
-            if salida:
-                device["graficas_folder"] = salida
-                log(f"[GRAFICAS] Guardadas en: {salida}", device["port"])
-            else:
-                log("[GRAFICAS] No se encontraron datos para graficar.",
-                    device["port"])
-        except Exception as error:
-            log(f"[GRAFICAS] No se pudieron generar las gráficas: {error}",
-                device["port"])
-
-
-# -----------------------------------------------------------------
-# Aviso sonoro
-# -----------------------------------------------------------------
-def reproducir_sonido_fin():
-    """Emite un aviso sonoro al terminar. Nunca interrumpe el programa.
-
-    En Windows usa winsound (una pequeña secuencia de pitidos). En otros
-    sistemas recurre a la campana del terminal. Cualquier error se ignora.
-    """
-    # Windows: melodía breve con winsound.
-    try:
-        if sys.platform.startswith("win"):
-            import winsound
-
-            for frecuencia in (880, 1175, 1568):   # La5, Re6, Sol6
-                winsound.Beep(frecuencia, 180)
-            return
-    except Exception:
-        pass
-
-    # Fallback multiplataforma: campana ASCII del terminal.
-    try:
-        for _ in range(3):
-            print("\a", end="", flush=True)
-            time.sleep(0.25)
-    except Exception:
-        pass
 
 
 # -----------------------------------------------------------------
@@ -1251,7 +875,6 @@ def open_devices(devices):
             device["serial"] = serial.Serial(
                 port,
                 BAUDRATE,
-
                 timeout=SERIAL_TIMEOUT_S,
             )
             opened.append(device)
@@ -1263,17 +886,7 @@ def open_devices(devices):
     return opened
 
 
-def close_devices(devices):
-    """Cierra los puertos serie que sigan abiertos."""
-    for device in devices:
-        if device["serial"] is not None:
-            try:
-                device["serial"].close()
-            except Exception:
-                pass
-
-
-def main(devices, folder_path, generar_graficas=True, reproducir_sonido=True):
+def main(devices, folder_path):
     """Prepara todos los equipos y lanza una medida en paralelo por puerto."""
     print("\n" + "=" * 62)
     print("GRATMA I-V ALEATORIO — MEDIDA EN PARALELO")
@@ -1299,10 +912,6 @@ def main(devices, folder_path, generar_graficas=True, reproducir_sonido=True):
         f"{'SÍ' if GND_UNSELECTED else 'NO'}"
     )
     print(f"Carpeta de salida: {folder_path}")
-    print(
-        "Gráficas automáticas al terminar: "
-        f"{'SÍ' if generar_graficas else 'NO'}"
-    )
     print("=" * 62)
 
     os.makedirs(folder_path, exist_ok=True)
@@ -1312,50 +921,17 @@ def main(devices, folder_path, generar_graficas=True, reproducir_sonido=True):
         print("\n[ERROR] No hay ningún puerto disponible. Se aborta la medida.")
         return
 
-    # Preparación de carpetas + comprobación de sobrescritura. Un chip cuyos
-    # archivos ya existen se SALTA para no perder datos; el resto continúa.
-    print(
-        "\n[CARPETAS] Preparando carpetas y comprobando archivos existentes:"
-    )
-    measurable = []
+    print("\n[CARPETAS] Preparando una carpeta de salida para cada chip:")
     for device in active_devices:
-        existing = find_existing_outputs(device, folder_path)
-        if existing:
-            device["skip"] = True
-            device["error"] = (
-                f"{len(existing)} archivo(s) ya existen; no se sobrescriben"
-            )
-            muestra = ", ".join(existing[:3])
-            if len(existing) > 3:
-                muestra += ", ..."
-            print(
-                f"  [SALTADO] {device['port']} — chip {device['chip']}: "
-                f"ya existen {len(existing)} archivos ({muestra})."
-            )
-            print(
-                "            Mueve o renombra los datos anteriores para volver "
-                "a medir este chip."
-            )
-            continue
-
         chip_folder_path = build_chip_folder_path(folder_path, device["chip"])
         os.makedirs(chip_folder_path, exist_ok=True)
         device["output_folder"] = chip_folder_path
-        measurable.append(device)
         print(
             f"  {device['port']:>12}  |  chip {device['chip']}  |  "
             f"{chip_folder_path}"
         )
 
-    if not measurable:
-        print(
-            "\n[ERROR] Ningún equipo puede medir sin sobrescribir datos "
-            "existentes. Se aborta la medida."
-        )
-        close_devices(active_devices)
-        return
-
-    parallel_ports = [device["port"] for device in measurable]
+    parallel_ports = [device["port"] for device in active_devices]
     threads = []
 
     try:
@@ -1366,8 +942,20 @@ def main(devices, folder_path, generar_graficas=True, reproducir_sonido=True):
                 "\n[SETUP] Activando tierra en los sensores no medidos "
                 "(um 1) en todos los equipos ..."
             )
-            for device in measurable:
-                send_cmd(device["serial"], "um 1", tag=device["port"])
+            for device in active_devices:
+                #TODO pasarlo a inglés todo
+                send_cmd(device["serial"], "um 1", tag=device["port"]) #Pone todos los sources a tierra mientras se está realizando la medida pero solo si se utiliza el gratma v2.0
+                #Activamos todos los switches
+                send_cmd(device["serial"], "sw 0 255", tag=device["port"])
+                send_cmd(device["serial"], "sw 1 255", tag=device["port"])
+                #Aplicamos 0V sobre todos los drenadores
+                send_cmd(device["serial"], "sv 1 0 0", tag=device["port"])
+                send_cmd(device["serial"], "sv 1 1 0", tag=device["port"])
+                #TODO revisar si se llega al valor de 0.8 y si no meter un bucle de control
+                #TODO revisar que 0 -> VG y 1 -> VS
+                #Aplicamos 0.8V sobre todos las puertas
+                send_cmd(device["serial"], "sv 0 0 800", tag=device["port"])
+                send_cmd(device["serial"], "sv 0 1 800", tag=device["port"])
 
         # Una sola estabilización para todos: los equipos esperan a la vez.
         print(
@@ -1377,11 +965,11 @@ def main(devices, folder_path, generar_graficas=True, reproducir_sonido=True):
         countdown_sleep(STABILIZE_S)
 
         print(
-            f"\n[INICIO] Lanzando {len(measurable)} medidas en paralelo: "
+            f"\n[INICIO] Lanzando {len(active_devices)} medidas en paralelo: "
             f"{', '.join(parallel_ports)}"
         )
 
-        for device in measurable:
+        for device in active_devices:
             thread = threading.Thread(
                 target=measure_device,
                 args=(device, parallel_ports),
@@ -1401,35 +989,26 @@ def main(devices, folder_path, generar_graficas=True, reproducir_sonido=True):
             thread.join()
 
     finally:
-        close_devices(active_devices)
-
-    # Gráficas al terminar toda la medida, en el hilo principal (matplotlib
-    # no es seguro entre hilos).
-    generar_graficas_de_equipos(measurable, generar_graficas)
+        for device in active_devices:
+            if device["serial"] is not None:
+                try:
+                    device["serial"].close()
+                except Exception:
+                    pass
 
     print("\n" + "=" * 62)
     print("RESUMEN")
     print("=" * 62)
     for device in active_devices:
-        if device.get("skip"):
-            status = f"SALTADO: {device['error']}"
-        elif device["error"] is None:
-            status = "OK"
-        else:
-            status = f"ERROR: {device['error']}"
+        status = "OK" if device["error"] is None else f"ERROR: {device['error']}"
         print(
             f"  {device['port']:>12}  |  {device['wafer']}_{device['chip']}  |  "
             f"{device['saved_files']} archivos  |  {status}"
         )
         if device["output_folder"]:
-            print(f"{'':>16}Datos:    {device['output_folder']}")
-        if device["graficas_folder"]:
-            print(f"{'':>16}Gráficas: {device['graficas_folder']}")
+            print(f"{'':>16}Carpeta: {device['output_folder']}")
 
     print("\n\033[1mFinish\033[0m")
-
-    if reproducir_sonido:
-        reproducir_sonido_fin()
 
 
 if __name__ == "__main__":
