@@ -73,7 +73,7 @@ from pathlib import Path
 import serial
 
 
-FOLDER_PATH = (r"C:\Users\alefe\Nextcloud\Clean_Room\Biosensors Elsauli\GRATMAs comparison\prueba gratma nuevo")
+FOLDER_PATH = (r"")
  # Se cambia con respecto al PC que lo use.
 
 # ==================== Información de sensores ====================
@@ -105,29 +105,7 @@ MEASUREMENT_TIMEOUT_S = 100
 MAX_SENSOR_ATTEMPTS = 5
 RETRY_DELAY_S = 5
 
-# ==================== Gráficas automáticas ====================
-GENERAR_GRAFICAS = True             # False para no generar gráficas al terminar.
-CARPETA_GRAFICAS = "graficas_GRATMA"  # Subcarpeta de salida dentro de cada chip.
-
-# ==================== Aviso sonoro ====================
-SONIDO_AL_TERMINAR = True           # False para no emitir sonido al terminar.
-
-
-# -----------------------------------------------------------------
-# Integración opcional con el generador de gráficas
-# -----------------------------------------------------------------
-# Se importa gratma_graph_para_todos.py como módulo. Debe estar en la misma
-# carpeta que este script. Si falta el módulo o sus dependencias (numpy,
-# matplotlib), 'graficador' queda a None y la medida funciona igualmente.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-try:
-    import matplotlib
-
-    matplotlib.use("Agg")   # Backend sin ventanas: solo guarda PNG en disco.
-    import GRATMA_graphics as graficador
-except (Exception, SystemExit):
-    graficador = None
-
+#si quitamos la mayoría de los print no hace falta el control de hilos
 
 # -----------------------------------------------------------------
 # Consola compartida entre hilos
@@ -149,6 +127,7 @@ def log(message="", tag=None):
 # -----------------------------------------------------------------
 # Configuración desde terminal
 # -----------------------------------------------------------------
+#esto no se cuando se usa 
 def parse_arguments():
     """Lee argumentos opcionales introducidos al ejecutar el programa."""
     parser = argparse.ArgumentParser(
@@ -232,7 +211,7 @@ def normalize_chip_name(wafer, chip_input):
     if chip_input.upper().startswith(wafer_prefix.upper()):
         return chip_input[len(wafer_prefix):]
     return chip_input
-
+#las funciones anteriores me parecen un poco innecesarias 
 
 def build_device(port, wafer, chip_input):
     """Crea el diccionario de un equipo con los nombres ya normalizados."""
@@ -260,7 +239,7 @@ def parse_device_argument(text):
         )
     return build_device(*parts)
 
-
+#aqui ya empieza lo que se ve al ejecutar el programa 
 def prompt_devices():
     """Pregunta por terminal cuántos equipos hay y los datos de cada uno."""
     while True:
@@ -332,8 +311,7 @@ def get_runtime_configuration(args):
     return {
         "devices": devices,
         "folder_path": folder_path,
-        "generar_graficas": GENERAR_GRAFICAS and not args.no_graficas,
-        "reproducir_sonido": SONIDO_AL_TERMINAR and not args.no_sonido,
+
     }
 
 
@@ -1117,126 +1095,6 @@ def measure_device(device, parallel_ports):
     log("Equipo terminado.", tag)
 
 
-# -----------------------------------------------------------------
-# Generación de gráficas al terminar
-# -----------------------------------------------------------------
-def _graficar_carpeta_chip(chip_folder):
-    """Genera las gráficas de la carpeta de un chip usando el módulo importado.
-
-    Devuelve la carpeta de salida usada, o None si no había datos válidos.
-    Reutiliza las funciones de gratma_graph_para_todos sin abrir ventanas.
-    """
-    medidas = graficador.localizar_medidas(chip_folder)
-    if not medidas:
-        return None
-
-    curvas, _ = graficador.cargar_curvas(medidas)
-    if not curvas:
-        return None
-
-    salida = os.path.join(chip_folder, CARPETA_GRAFICAS)
-    os.makedirs(salida, exist_ok=True)
-    salida_path = Path(salida)
-
-    titulo = graficador.extraer_titulo_muestra_dirac(curvas)
-    repeticiones = sorted({c["rep"] for c in curvas})
-    n_ultimas = min(graficador.NUM_ULTIMAS_REPETICIONES, len(repeticiones))
-    ultimas = repeticiones[-n_ultimas:] if n_ultimas else repeticiones
-
-    graficador.comprobar_repeticiones(curvas, repeticiones)
-
-    graficador.generar_grupo(
-        curvas,
-        repeticiones,
-        f"{len(repeticiones)} repeticiones "
-        f"({', '.join(map(str, repeticiones))})",
-        "01_todas_repeticiones",
-        salida_path,
-        titulo,
-    )
-    graficador.generar_grupo(
-        curvas,
-        ultimas,
-        f"últimas {len(ultimas)} repeticiones "
-        f"({', '.join(map(str, ultimas))})",
-        f"02_ultimas_{len(ultimas)}_repeticiones",
-        salida_path,
-        titulo,
-    )
-
-    return salida
-
-
-def generar_graficas_de_equipos(devices, generar_graficas):
-    """Genera las gráficas de cada chip medido, en el hilo principal."""
-    if not generar_graficas:
-        return
-
-    if graficador is None:
-        print(
-            "\n[GRAFICAS] Módulo de gráficas no disponible (falta numpy/"
-            "matplotlib o gratma_graph_para_todos.py en esta carpeta). "
-            "Se omite la generación de gráficas."
-        )
-        return
-
-    pendientes = [
-        device
-        for device in devices
-        if device.get("output_folder") and device.get("saved_files", 0) > 0
-    ]
-    if not pendientes:
-        return
-
-    print("\n" + "=" * 62)
-    print("GENERACIÓN DE GRÁFICAS")
-    print("=" * 62)
-
-    for device in pendientes:
-        chip_folder = device["output_folder"]
-        try:
-            log(f"[GRAFICAS] Generando gráficas del chip {device['chip']} ...",
-                device["port"])
-            salida = _graficar_carpeta_chip(chip_folder)
-            if salida:
-                device["graficas_folder"] = salida
-                log(f"[GRAFICAS] Guardadas en: {salida}", device["port"])
-            else:
-                log("[GRAFICAS] No se encontraron datos para graficar.",
-                    device["port"])
-        except Exception as error:
-            log(f"[GRAFICAS] No se pudieron generar las gráficas: {error}",
-                device["port"])
-
-
-# -----------------------------------------------------------------
-# Aviso sonoro
-# -----------------------------------------------------------------
-def reproducir_sonido_fin():
-    """Emite un aviso sonoro al terminar. Nunca interrumpe el programa.
-
-    En Windows usa winsound (una pequeña secuencia de pitidos). En otros
-    sistemas recurre a la campana del terminal. Cualquier error se ignora.
-    """
-    # Windows: melodía breve con winsound.
-    try:
-        if sys.platform.startswith("win"):
-            import winsound
-
-            for frecuencia in (880, 1175, 1568):   # La5, Re6, Sol6
-                winsound.Beep(frecuencia, 180)
-            return
-    except Exception:
-        pass
-
-    # Fallback multiplataforma: campana ASCII del terminal.
-    try:
-        for _ in range(3):
-            print("\a", end="", flush=True)
-            time.sleep(0.25)
-    except Exception:
-        pass
-
 
 # -----------------------------------------------------------------
 # Programa principal
@@ -1273,50 +1131,16 @@ def close_devices(devices):
                 pass
 
 
-def main(devices, folder_path, generar_graficas=True, reproducir_sonido=True):
-    """Prepara todos los equipos y lanza una medida en paralelo por puerto."""
-    print("\n" + "=" * 62)
-    print("GRATMA I-V ALEATORIO — MEDIDA EN PARALELO")
-    print("=" * 62)
-    for device in devices:
-        print(
-            f"  {device['port']:>12}  |  wafer {device['wafer']}  |  "
-            f"chip {device['chip']}"
-        )
-    print("-" * 62)
-    print(f"Sensores: {NSENSOR} | Secuencias: {NUM_REP}")
-    print(
-        f"VD={VD} | VGINIT={VGINIT} | VGEND={VGEND} | "
-        f"VGSWEEP={VGSWEEP} | FBWD={FBWD}"
-    )
-    print(
-        f"Estabilización inicial: {STABILIZE_S}s "
-        f"({STABILIZE_S / 60:.1f} min)"
-    )
-    print(f"Espera entre sensores: {BETWEEN_SENSORS_S}s")
-    print(
-        "Tierra a los no medidos (um 1): "
-        f"{'SÍ' if GND_UNSELECTED else 'NO'}"
-    )
-    print(f"Carpeta de salida: {folder_path}")
-    print(
-        "Gráficas automáticas al terminar: "
-        f"{'SÍ' if generar_graficas else 'NO'}"
-    )
-    print("=" * 62)
+def main(devices, folder_path):
+ 
 
     os.makedirs(folder_path, exist_ok=True)
 
     active_devices = open_devices(devices)
     if not active_devices:
-        print("\n[ERROR] No hay ningún puerto disponible. Se aborta la medida.")
         return
 
-    # Preparación de carpetas + comprobación de sobrescritura. Un chip cuyos
-    # archivos ya existen se SALTA para no perder datos; el resto continúa.
-    print(
-        "\n[CARPETAS] Preparando carpetas y comprobando archivos existentes:"
-    )
+    
     measurable = []
     for device in active_devices:
         existing = find_existing_outputs(device, folder_path)
@@ -1362,24 +1186,15 @@ def main(devices, folder_path, generar_graficas=True, reproducir_sonido=True):
         time.sleep(2)   # Margen tras abrir los puertos.
 
         if GND_UNSELECTED:
-            print(
-                "\n[SETUP] Activando tierra en los sensores no medidos "
-                "(um 1) en todos los equipos ..."
-            )
+            
             for device in measurable:
                 send_cmd(device["serial"], "um 1", tag=device["port"])
 
         # Una sola estabilización para todos: los equipos esperan a la vez.
-        print(
-            f"\n[ESPERA] Estabilizando {STABILIZE_S}s "
-            f"({STABILIZE_S / 60:.1f} min) antes de empezar ..."
-        )
+        
         countdown_sleep(STABILIZE_S)
 
-        print(
-            f"\n[INICIO] Lanzando {len(measurable)} medidas en paralelo: "
-            f"{', '.join(parallel_ports)}"
-        )
+        
 
         for device in measurable:
             thread = threading.Thread(
@@ -1395,41 +1210,14 @@ def main(devices, folder_path, generar_graficas=True, reproducir_sonido=True):
             thread.join()
 
     except KeyboardInterrupt:
-        print("\n[AVISO] Interrupción por teclado: esperando a que los hilos "
-              "terminen la medida en curso ...")
+        
         for thread in threads:
             thread.join()
 
     finally:
         close_devices(active_devices)
 
-    # Gráficas al terminar toda la medida, en el hilo principal (matplotlib
-    # no es seguro entre hilos).
-    generar_graficas_de_equipos(measurable, generar_graficas)
-
-    print("\n" + "=" * 62)
-    print("RESUMEN")
-    print("=" * 62)
-    for device in active_devices:
-        if device.get("skip"):
-            status = f"SALTADO: {device['error']}"
-        elif device["error"] is None:
-            status = "OK"
-        else:
-            status = f"ERROR: {device['error']}"
-        print(
-            f"  {device['port']:>12}  |  {device['wafer']}_{device['chip']}  |  "
-            f"{device['saved_files']} archivos  |  {status}"
-        )
-        if device["output_folder"]:
-            print(f"{'':>16}Datos:    {device['output_folder']}")
-        if device["graficas_folder"]:
-            print(f"{'':>16}Gráficas: {device['graficas_folder']}")
-
-    print("\n\033[1mFinish\033[0m")
-
-    if reproducir_sonido:
-        reproducir_sonido_fin()
+    
 
 
 if __name__ == "__main__":
