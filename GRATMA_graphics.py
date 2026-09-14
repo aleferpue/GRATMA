@@ -20,14 +20,14 @@ Indicando además una carpeta de salida:
         --salida "C:\\ruta\\Resultados"
 
 Archivos admitidos:
-    <wafer>_<chip>_Array<sensor>_random_<secuencia>_<electrolito>.txt
-    All_info_<wafer>_<chip>_Array<sensor>_random_<secuencia>_<electrolito>.txt
+    <wafer>_<chip>_Array<Array>_random_<secuencia>_<electrolito>.txt
+    All_info_<wafer>_<chip>_Array<Array>_random_<secuencia>_<electrolito>.txt
 
 También mantiene compatibilidad con los nombres antiguos:
-    Id_Vfg__<chip>_<sensor>_<extra>_GRATMA-<rep>.txt
-    All_info_<chip>_<sensor>_<rep>_<extra>.txt
+    Id_Vfg__<chip>_<Array>_<extra>_GRATMA-<rep>.txt
+    All_info_<chip>_<Array>_<rep>_<extra>.txt
 
-La cantidad de sensores y repeticiones se detecta automáticamente.
+La cantidad de Array y repeticiones se detecta automáticamente.
 Genera cinco gráficas con todas las repeticiones y otras cinco con las
 últimas repeticiones indicadas en NUM_ULTIMAS_REPETICIONES.
 
@@ -66,9 +66,9 @@ NOMBRE_CARPETA_SALIDA = "graficas_GRATMA"
 # Número de repeticiones finales que se comparan en el segundo grupo.
 NUM_ULTIMAS_REPETICIONES = 3
 
-# None = todos los sensores detectados.
+# None = todos los Array detectados.
 # Ejemplo para representar solo algunos: [1, 3, 5]
-SENSORES_A_GRAFICAR = None
+Array_A_GRAFICAR = None
 
 BUSCAR_EN_SUBCARPETAS = True
 MOSTRAR_FIGURAS = False
@@ -83,7 +83,7 @@ ARCHIVO_CONFIG = Path.home() / ".gratma_graph_config.json"
 A_MICROAMPERIOS = 1e6
 
 X_LABEL = "Gate Voltage (V)"
-Y_LABEL = "Sensor Current, Is (µA)"
+Y_LABEL = "Array Current, Is (µA)"
 
 # None = límites automáticos. Se pueden fijar, por ejemplo:
 # XLIM = (-0.2, 1.2)
@@ -346,7 +346,7 @@ def extraer_metadata_nuevo(path):
     nombre_medida = nombre[len("All_info_"):] if es_all_info else nombre
 
     patron = re.compile(
-        r"^(?P<muestra>.+)_Array(?P<sensor>\d+)_random_"
+        r"^(?P<muestra>.+)_Array(?P<Array>\d+)_random_"
         r"(?P<rep>\d+)_(?P<electrolito>.+)\.txt$",
         re.IGNORECASE,
     )
@@ -361,7 +361,7 @@ def extraer_metadata_nuevo(path):
     return {
         **datos_muestra,
         "titulo": f"{titulo_base} — {electrolito}",
-        "sensor": int(coincidencia.group("sensor")),
+        "Array": int(coincidencia.group("Array")),
         "rep": int(coincidencia.group("rep")),
         "electrolito": electrolito,
         "grupo": f"{datos_muestra['muestra']}__{electrolito}",
@@ -370,10 +370,10 @@ def extraer_metadata_nuevo(path):
 
 
 def extraer_metadata_limpio(path):
-    """Obtiene muestra, chip, sensor y repetición desde Id_Vfg__...."""
+    """Obtiene muestra, chip, Array y repetición desde Id_Vfg__...."""
     nombre = Path(path).name
     patron = re.compile(
-        r"^Id_Vfg__(?P<chip>.+)_(?P<sensor>\d+)_"
+        r"^Id_Vfg__(?P<chip>.+)_(?P<Array>\d+)_"
         r"(?P<extra>.+)_GRATMA-(?P<rep>\d+)\.txt$",
         re.IGNORECASE,
     )
@@ -383,7 +383,7 @@ def extraer_metadata_limpio(path):
     datos_muestra = descomponer_muestra(coincidencia.group("chip"))
     return {
         **datos_muestra,
-        "sensor": int(coincidencia.group("sensor")),
+        "Array": int(coincidencia.group("Array")),
         "rep": int(coincidencia.group("rep")),
         "electrolito": "",
         "grupo": datos_muestra["muestra"],
@@ -391,10 +391,10 @@ def extraer_metadata_limpio(path):
 
 
 def extraer_metadata_bruto(path):
-    """Obtiene muestra, chip, sensor y repetición desde All_info_ antiguo."""
+    """Obtiene muestra, chip, Array y repetición desde All_info_ antiguo."""
     nombre = Path(path).name
     patron = re.compile(
-        r"^All_info_(?P<chip>.+)_(?P<sensor>\d+)_"
+        r"^All_info_(?P<chip>.+)_(?P<Array>\d+)_"
         r"(?P<rep>\d+)_(?P<extra>.+)\.txt$",
         re.IGNORECASE,
     )
@@ -404,7 +404,7 @@ def extraer_metadata_bruto(path):
     datos_muestra = descomponer_muestra(coincidencia.group("chip"))
     return {
         **datos_muestra,
-        "sensor": int(coincidencia.group("sensor")),
+        "Array": int(coincidencia.group("Array")),
         "rep": int(coincidencia.group("rep")),
         "electrolito": "",
         "grupo": datos_muestra["muestra"],
@@ -415,14 +415,14 @@ def clave_medida(metadata):
     """Clave única que evita mezclar chips o electrolitos diferentes."""
     return (
         metadata.get("grupo", metadata["muestra"]),
-        metadata["sensor"],
+        metadata["Array"],
         metadata["rep"],
     )
 
 
 def localizar_medidas(carpeta):
     """
-    Devuelve una medida por (muestra, electrolito, sensor, repetición).
+    Devuelve una medida por (muestra, electrolito, Array, repetición).
 
     Prioridad de lectura:
       1. Archivo definitivo con el nombre nuevo.
@@ -608,10 +608,10 @@ def cargar_curvas(medidas):
 
     for clave in sorted(medidas):
         registro = medidas[clave]
-        sensor = registro["sensor"]
+        Array = registro["Array"]
         rep = registro["rep"]
 
-        if SENSORES_A_GRAFICAR is not None and sensor not in SENSORES_A_GRAFICAR:
+        if Array_A_GRAFICAR is not None and Array not in Array_A_GRAFICAR:
             continue
 
         try:
@@ -619,7 +619,7 @@ def cargar_curvas(medidas):
             forward, backward = separar_forward_backward(v, i)
         except Exception as exc:
             print(
-                f"  [WARN] S{sensor} Rep {rep}: "
+                f"  [WARN] S{Array} Rep {rep}: "
                 f"{registro['path'].name}: {exc}"
             )
             continue
@@ -633,7 +633,7 @@ def cargar_curvas(medidas):
                 "titulo_muestra": registro["titulo"],
                 "electrolito": registro.get("electrolito", ""),
                 "grupo": registro.get("grupo", registro["muestra"]),
-                "sensor": sensor,
+                "Array": Array,
                 "rep": rep,
                 "path": registro["path"],
                 "v": v,
@@ -681,14 +681,14 @@ def configurar_ejes(ax, titulo=None, x_label=X_LABEL, y_label=Y_LABEL):
         ax.set_ylim(*YLIM)
 
 
-def estilos(sensores):
+def estilos(Array):
     try:
         mapa = plt.colormaps.get_cmap("tab10")
     except AttributeError:
         mapa = plt.cm.get_cmap("tab10")
     colores = {
-        sensor: mapa(indice % 10)
-        for indice, sensor in enumerate(sorted(sensores))
+        Array: mapa(indice % 10)
+        for indice, Array in enumerate(sorted(Array))
     }
     lineas = {
         1: "-",
@@ -700,15 +700,15 @@ def estilos(sensores):
     return colores, lineas
 
 
-def leyendas(ax, sensores, repeticiones, colores, lineas):
-    elementos_sensores = [
-        Line2D([0], [0], color=colores[s], lw=2.3, label=f"Sensor {s}")
-        for s in sensores
+def leyendas(ax, Array, repeticiones, colores, lineas):
+    elementos_Array = [
+        Line2D([0], [0], color=colores[s], lw=2.3, label=f"Array {s}")
+        for s in Array
     ]
 
     ax.legend(
-        handles=elementos_sensores,
-        title="Sensores",
+        handles=elementos_Array,
+        title="Arrays",
         bbox_to_anchor=(1.02, 1.0),
         loc="upper left",
         frameon=False,
@@ -728,8 +728,8 @@ def guardar_figura(fig, carpeta_salida, nombre):
 
 def graficar_ramas(curvas, repeticiones, rama, titulo, salida, nombre):
     seleccionadas = [c for c in curvas if c["rep"] in repeticiones]
-    sensores = sorted({c["sensor"] for c in seleccionadas})
-    colores, lineas = estilos(sensores)
+    Array = sorted({c["Array"] for c in seleccionadas})
+    colores, lineas = estilos(Array)
 
     fig, ax = plt.subplots(figsize=TAMANIO_FIGURA_CURVAS)
     dibujadas = 0
@@ -741,7 +741,7 @@ def graficar_ramas(curvas, repeticiones, rama, titulo, salida, nombre):
         ax.plot(
             v,
             i,
-            color=colores[curva["sensor"]],
+            color=colores[curva["Array"]],
             linestyle="-",
             linewidth=1.4,
             alpha=0.95,
@@ -751,7 +751,7 @@ def graficar_ramas(curvas, repeticiones, rama, titulo, salida, nombre):
         dibujadas += 1
 
     configurar_ejes(ax, f"{titulo} ({dibujadas} curvas)")
-    leyendas(ax, sensores, repeticiones, colores, lineas)
+    leyendas(ax, Array, repeticiones, colores, lineas)
     fig.tight_layout(rect=(0, 0, 0.80, 1))
     return guardar_figura(fig, salida, nombre)
 
@@ -934,14 +934,14 @@ def extraer_titulo_muestra_dirac(curvas):
     return " / ".join(titulos)
 
 
-def puntos_dirac_por_sensor_y_repeticion(curvas, repeticiones):
+def puntos_dirac_por_Array_y_repeticion(curvas, repeticiones):
     """
-    Devuelve los puntos de Dirac conservando sensor, repetición y rama.
+    Devuelve los puntos de Dirac conservando Array, repetición y rama.
 
     Estructura:
       {
-        "forward": {sensor: {repetición: Vdirac}},
-        "backward": {sensor: {repetición: Vdirac}},
+        "forward": {Array: {repetición: Vdirac}},
+        "backward": {Array: {repetición: Vdirac}},
       }
     """
     resultado = {"forward": {}, "backward": {}}
@@ -949,7 +949,7 @@ def puntos_dirac_por_sensor_y_repeticion(curvas, repeticiones):
 
     for curva in curvas:
         rep = curva["rep"]
-        sensor = curva["sensor"]
+        Array = curva["Array"]
         if rep not in repeticiones:
             continue
 
@@ -958,7 +958,7 @@ def puntos_dirac_por_sensor_y_repeticion(curvas, repeticiones):
             if len(v) == 0 or len(i) == 0:
                 continue
             indice_minimo = int(np.argmin(i))
-            resultado[rama].setdefault(sensor, {})[rep] = float(v[indice_minimo])
+            resultado[rama].setdefault(Array, {})[rep] = float(v[indice_minimo])
 
     return resultado
 
@@ -993,19 +993,19 @@ def limites_dirac_repetibilidad(datos):
 
 def graficar_dirac_repetibilidad(curvas, repeticiones, salida, nombre):
     """
-    Dibuja VDirac frente a la repetición, con una línea por sensor y dos
+    Dibuja VDirac frente a la repetición, con una línea por Array y dos
     paneles independientes: Forward y Backward.
     """
     repeticiones = sorted(repeticiones)
-    datos = puntos_dirac_por_sensor_y_repeticion(curvas, repeticiones)
-    sensores = sorted(
+    datos = puntos_dirac_por_Array_y_repeticion(curvas, repeticiones)
+    Array = sorted(
         set(datos["forward"].keys()) | set(datos["backward"].keys())
     )
 
-    if not sensores:
-        raise ValueError("no se pudieron calcular puntos de Dirac por sensor")
+    if not Array:
+        raise ValueError("no se pudieron calcular puntos de Dirac por Array")
 
-    colores, _ = estilos(sensores)
+    colores, _ = estilos(Array)
     posiciones = np.arange(len(repeticiones), dtype=float)
     etiquetas_x = [f"Rep {rep}" for rep in repeticiones]
 
@@ -1021,8 +1021,8 @@ def graficar_dirac_repetibilidad(curvas, repeticiones, salida, nombre):
         ("forward", "backward"),
         ("Forward", "Backward"),
     ):
-        for sensor in sensores:
-            por_repeticion = datos[rama].get(sensor, {})
+        for Array in Array:
+            por_repeticion = datos[rama].get(Array, {})
             valores = [
                 por_repeticion.get(rep, np.nan)
                 for rep in repeticiones
@@ -1033,11 +1033,11 @@ def graficar_dirac_repetibilidad(curvas, repeticiones, salida, nombre):
             ax.plot(
                 posiciones,
                 valores,
-                color=colores[sensor],
+                color=colores[Array],
                 marker="o",
                 markersize=6.2,
                 linewidth=1.8,
-                label=f"S{sensor}",
+                label=f"S{Array}",
                 solid_capstyle="round",
                 solid_joinstyle="round",
             )
@@ -1066,7 +1066,7 @@ def graficar_dirac_repetibilidad(curvas, repeticiones, salida, nombre):
             borde.set_linewidth(1.7)
 
         leyenda = ax.legend(
-            title="Sensor",
+            title="Array",
             ncol=2,
             loc="upper right",
             frameon=False,
@@ -1117,17 +1117,17 @@ def graficar_dirac_repetibilidad(curvas, repeticiones, salida, nombre):
 
 
 def comprobar_repeticiones(curvas, repeticiones_esperadas):
-    sensores = sorted({c["sensor"] for c in curvas})
-    disponibles = {(c["sensor"], c["rep"]) for c in curvas}
+    Array = sorted({c["Array"] for c in curvas})
+    disponibles = {(c["Array"], c["rep"]) for c in curvas}
 
     print("\nComprobación de archivos:")
-    for sensor in sensores:
+    for Array in Array:
         reps = [
             r for r in repeticiones_esperadas
-            if (sensor, r) in disponibles
+            if (Array, r) in disponibles
         ]
         faltan = [r for r in repeticiones_esperadas if r not in reps]
-        mensaje = f"  Sensor {sensor}: repeticiones {reps}"
+        mensaje = f"  Array {Array}: repeticiones {reps}"
         if faltan:
             mensaje += f" | faltan {faltan}"
         print(mensaje)
@@ -1147,7 +1147,7 @@ def generar_grupo(
         curvas,
         repeticiones,
         "forward",
-        f"{titulo_muestra} — Todos los sensores — Forward — {etiqueta}",
+        f"{titulo_muestra} — Todos los Array — Forward — {etiqueta}",
         salida,
         f"{prefijo}_forward.png",
     )
@@ -1155,7 +1155,7 @@ def generar_grupo(
         curvas,
         repeticiones,
         "backward",
-        f"{titulo_muestra} — Todos los sensores — Backward — {etiqueta}",
+        f"{titulo_muestra} — Todos los Array — Backward — {etiqueta}",
         salida,
         f"{prefijo}_backward.png",
     )
@@ -1237,7 +1237,7 @@ def main():
         titulo_muestra = extraer_titulo_muestra_dirac(curvas_muestra)
         muestra = curvas_muestra[0]["muestra"]
         electrolito = curvas_muestra[0].get("electrolito", "")
-        sensores = sorted({c["sensor"] for c in curvas_muestra})
+        Array = sorted({c["Array"] for c in curvas_muestra})
         repeticiones = sorted({c["rep"] for c in curvas_muestra})
         ultimas = repeticiones[
             -min(NUM_ULTIMAS_REPETICIONES, len(repeticiones)):
@@ -1256,7 +1256,7 @@ def main():
 
         print("\n" + "-" * 72)
         print(f"Muestra/chip: {titulo_muestra}")
-        print(f"Sensores detectados: {sensores}")
+        print(f"Array detectados: {Array}")
         print(f"Repeticiones detectadas: {repeticiones}")
         print(f"Carpeta específica: {salida_muestra}")
 
