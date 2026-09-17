@@ -37,10 +37,10 @@ qué repeticiones se han usado en la salida.
 
 Compatibilidad de TXT
 ---------------------
-- Formato nuevo sin aging:
+- Formato nuevo sin funcionalizar:
     Wafer_Chip_Array1_random_1_PB-S0_01.txt
-- Formato nuevo con aging:
-    Wafer_Chip_aging_Array1_random_1_PB-S0_01.txt
+- Formato nuevo con funcionalizado:
+    Wafer_Chip_funcionalizado_Array1_random_1_PB-S0_01.txt
 - All_info_ equivalentes (se usan solo si no existe el TXT definitivo)
 - Formatos antiguos Id_Vfg__... y All_info_...
 
@@ -55,11 +55,11 @@ Uso normal
 
 Se abrirán dos ventanas para seleccionar:
     1. carpeta de medidas antiguas
-    2. carpeta de medidas aging
+    2. carpeta de medidas funcionalizadas
 
-Si una de las carpetas termina en '_aging', el programa la identifica
-automáticamente como la carpeta AGING aunque se hayan seleccionado al revés.
-Los resultados se guardan dentro de esa carpeta en 'aging_compare'.
+Si una de las carpetas termina en '_funcionalizado', el programa la identifica
+automáticamente como la carpeta FUNCIONALIZADO aunque se hayan seleccionado al revés.
+Los resultados se guardan en la carpeta fija configurada en RUTA_SALIDA_FIJA.
 
 También por terminal:
     python gratma_compare_aging.py --antes "C:\\...\\antes" --aging "C:\\...\\aging"
@@ -110,6 +110,21 @@ REPS_A_USAR = {3, 4, 5}
 # (promedio entre "antes" y "aging") usada para el RMSE y el AUC "en torno
 # al mínimo". Ajusta este valor si quieres una ventana más ancha o estrecha.
 SEMIANCHO_VENTANA_MINIMO = 0.2
+
+# Carpeta fija donde se guardan las figuras y el CSV. No se crea ninguna
+# subcarpeta dentro de esta ruta: todos los archivos van directamente aquí,
+# distinguidos por el nombre de wafer/chip que llevan en el nombre de archivo.
+RUTA_SALIDA_FIJA = r"C:\Users\alefe\Nextcloud\Clean_Room\Biosensors Elsauli\Clasificación\FIGURAS REPORT"
+
+# Sufijos de carpeta reconocidos como condición "post" (después del proceso),
+# y el nombre que se muestra en las figuras para cada uno. Se admiten ambos:
+# si la carpeta termina en "_aging" las figuras dicen "Aging"; si termina en
+# "_funcionalizado" las figuras dicen "Functionalized". Añade más entradas
+# aquí si necesitas reconocer otros sufijos.
+SUFIJOS_A_ETIQUETAS = {
+    "_aging": "Aging",
+    "_funcionalizado": "Functionalized",
+}
 
 # ===========================================================================
 
@@ -183,16 +198,41 @@ def resolver_carpeta(ruta, titulo, inicial=None):
     return p if p.is_dir() else None
 
 
+def detectar_sufijo_post(path):
+    """
+    Devuelve el sufijo reconocido (p.ej. '_aging' o '_funcionalizado') si el
+    nombre de la carpeta termina en alguno de los sufijos de SUFIJOS_A_ETIQUETAS,
+    o None si no coincide con ninguno.
+    """
+    nombre = Path(path).name.lower()
+    for sufijo in SUFIJOS_A_ETIQUETAS:
+        if nombre.endswith(sufijo.lower()):
+            return sufijo
+    return None
+
+
 def es_carpeta_aging(path):
-    """Devuelve True si el nombre de la carpeta termina exactamente en _aging."""
-    return Path(path).name.lower().endswith("_aging")
+    """Devuelve True si el nombre de la carpeta termina en alguno de los
+    sufijos reconocidos como condición "post" (ver SUFIJOS_A_ETIQUETAS)."""
+    return detectar_sufijo_post(path) is not None
+
+
+def etiqueta_post_para_carpeta(path):
+    """
+    Nombre a mostrar en las figuras para la condición "post", según el
+    sufijo detectado en la carpeta (ver SUFIJOS_A_ETIQUETAS). Si no se
+    reconoce ningún sufijo, se usa "Aging" por defecto.
+    """
+    sufijo = detectar_sufijo_post(path)
+    return SUFIJOS_A_ETIQUETAS.get(sufijo, "Aging")
 
 
 def detectar_orden_antes_aging(carpeta_1, carpeta_2):
     """
-    Usa el convenio del laboratorio: la carpeta de medidas aging se llama
-    <nombre_chip>_aging. Si solo una de las dos carpetas cumple ese convenio,
-    se usa como AGING automáticamente.
+    Usa el convenio del laboratorio: la carpeta de medidas "post" termina en
+    alguno de los sufijos de SUFIJOS_A_ETIQUETAS (p.ej. <chip>_aging o
+    <chip>_funcionalizado). Si solo una de las dos carpetas cumple ese
+    convenio, se usa como carpeta "post" automáticamente.
 
     Devuelve: (carpeta_antes, carpeta_aging, se_intercambiaron)
     """
@@ -204,7 +244,7 @@ def detectar_orden_antes_aging(carpeta_1, carpeta_2):
     if c2_aging and not c1_aging:
         return carpeta_1, carpeta_2, False
 
-    # Si ambas o ninguna terminan en _aging, respetamos el orden seleccionado.
+    # Si ambas o ninguna terminan en un sufijo reconocido, respetamos el orden seleccionado.
     return carpeta_1, carpeta_2, False
 
 
@@ -229,8 +269,10 @@ def buscar_archivos(carpeta, patron):
 def normalizar_muestra(nombre):
     """Quita marcadores de etapa al final del identificador de muestra."""
     nombre = str(nombre).strip("_")
-    # La etapa aging del código de adquisición aparece justo antes de _ArrayN.
-    nombre = re.sub(r"_(?:aging|aged|baseline|before|initial)$", "", nombre, flags=re.I)
+    # Los sufijos de SUFIJOS_A_ETIQUETAS (aging, funcionalizado...) aparecen
+    # justo antes de _ArrayN.
+    sufijos_post = "|".join(s.lstrip("_") for s in SUFIJOS_A_ETIQUETAS)
+    nombre = re.sub(rf"_(?:{sufijos_post}|baseline|before|initial)$", "", nombre, flags=re.I)
     return nombre
 
 
@@ -250,7 +292,11 @@ def extraer_metadata_nuevo(path):
 
     muestra_cruda = m.group("muestra")
     muestra = normalizar_muestra(muestra_cruda)
-    stage = "aging" if re.search(r"_aging$", muestra_cruda, re.I) else ""
+    stage = ""
+    for sufijo in SUFIJOS_A_ETIQUETAS:
+        if re.search(rf"{re.escape(sufijo)}$", muestra_cruda, re.I):
+            stage = sufijo.lstrip("_")
+            break
 
     return {
         "muestra": muestra,
@@ -700,6 +746,27 @@ def titulo_grupo(muestra, electrolito):
     return f"{muestra} — {electrolito}" if electrolito else muestra
 
 
+def separar_wafer_chip(muestra):
+    """
+    Asume el convenio <wafer>_<chip> (el primer guion bajo separa ambas
+    partes). Si la muestra no tiene guion bajo, se trata todo como nombre
+    de chip y el wafer queda vacío.
+
+    OJO: esto es una suposición sobre el formato del nombre de muestra —
+    confírmalo o ajústalo si tu convenio de nombres es distinto.
+    """
+    partes = muestra.split("_", 1)
+    if len(partes) == 2:
+        return partes[0], partes[1]
+    return "", muestra
+
+
+def construir_nombre_base(muestra):
+    wafer, chip = separar_wafer_chip(muestra)
+    nombre = f"{wafer},{chip}" if wafer else chip
+    return re.sub(r'[<>:"/\\|?*]+', "_", nombre)
+
+
 def configurar_ax(ax, grid_axis="y"):
     ax.tick_params(direction="in", top=True, right=True)
     for spine in ax.spines.values():
@@ -707,44 +774,40 @@ def configurar_ax(ax, grid_axis="y"):
     ax.grid(axis=grid_axis, alpha=0.20)
 
 
-def figura_resumen(comps, salida, titulo):
+def figura_resumen(comps, salida, titulo, nombre_base, etiqueta_post):
     arrays = [c["array"] for c in comps]
-    y = np.arange(len(arrays), dtype=float)
     x_cat = np.arange(len(arrays), dtype=float)
     offset = 0.12
     ancho = 0.35
 
-    alto = max(9.0, 0.5 * len(arrays) + 4.0)
-    fig, axes = plt.subplots(2, 2, figsize=(14, alto))
+    fig, axes = plt.subplots(2, 2, figsize=(14, 9))
     ax1, ax2, ax3, ax4 = axes.flat
 
-    # 1) Dirac Forward (horizontal)
+    # 1) Dirac Forward (vertical)
     before = [c["vdirac_f_antes"] for c in comps]
     aging = [c["vdirac_f_aging"] for c in comps]
     eb = [c["vdirac_f_antes_std"] for c in comps]
     ea = [c["vdirac_f_aging_std"] for c in comps]
-    ax1.errorbar(before, y - offset, xerr=eb, marker="o", linestyle="none", capsize=3, label="Before")
-    ax1.errorbar(aging, y + offset, xerr=ea, marker="o", linestyle="none", capsize=3, label="Aging")
+    ax1.errorbar(x_cat - offset, before, yerr=eb, marker="o", linestyle="none", capsize=3, label="Before")
+    ax1.errorbar(x_cat + offset, aging, yerr=ea, marker="o", linestyle="none", capsize=3, label=etiqueta_post)
     ax1.set_title("Dirac Point — Forward", fontweight="bold")
-    ax1.set_xlabel("VDirac (V)")
-    ax1.set_yticks(y, [f"A{a}" for a in arrays])
-    ax1.invert_yaxis()
+    ax1.set_ylabel("VDirac (V)")
+    ax1.set_xticks(x_cat, [f"A{a}" for a in arrays])
     ax1.legend(frameon=False)
-    configurar_ax(ax1, grid_axis="x")
+    configurar_ax(ax1)
 
-    # 2) Dirac Backward (horizontal)
+    # 2) Dirac Backward (vertical)
     before = [c["vdirac_b_antes"] for c in comps]
     aging = [c["vdirac_b_aging"] for c in comps]
     eb = [c["vdirac_b_antes_std"] for c in comps]
     ea = [c["vdirac_b_aging_std"] for c in comps]
-    ax2.errorbar(before, y - offset, xerr=eb, marker="o", linestyle="none", capsize=3, label="Before")
-    ax2.errorbar(aging, y + offset, xerr=ea, marker="o", linestyle="none", capsize=3, label="Aging")
+    ax2.errorbar(x_cat - offset, before, yerr=eb, marker="o", linestyle="none", capsize=3, label="Before")
+    ax2.errorbar(x_cat + offset, aging, yerr=ea, marker="o", linestyle="none", capsize=3, label=etiqueta_post)
     ax2.set_title("Dirac Point — Backward", fontweight="bold")
-    ax2.set_xlabel("VDirac (V)")
-    ax2.set_yticks(y, [f"A{a}" for a in arrays])
-    ax2.invert_yaxis()
+    ax2.set_ylabel("VDirac (V)")
+    ax2.set_xticks(x_cat, [f"A{a}" for a in arrays])
     ax2.legend(frameon=False)
-    configurar_ax(ax2, grid_axis="x")
+    configurar_ax(ax2)
 
     # 3) Histéresis (vertical, sin cambios de orientación)
     h_b = np.asarray([c["histeresis_antes"] for c in comps], dtype=float)
@@ -752,7 +815,7 @@ def figura_resumen(comps, salida, titulo):
     h_b_std = np.asarray([c["histeresis_antes_std"] for c in comps], dtype=float)
     h_a_std = np.asarray([c["histeresis_aging_std"] for c in comps], dtype=float)
     ax3.bar(x_cat - ancho / 2, h_b, width=ancho, yerr=h_b_std, capsize=3, label="Before")
-    ax3.bar(x_cat + ancho / 2, h_a, width=ancho, yerr=h_a_std, capsize=3, label="Aging")
+    ax3.bar(x_cat + ancho / 2, h_a, width=ancho, yerr=h_a_std, capsize=3, label=etiqueta_post)
     ax3.set_title("Dirac Hysteresis", fontweight="bold")
     ax3.set_ylabel(r"|VDirac$_B$ - VDirac$_F$| (V)")
     ax3.set_xticks(x_cat, [f"A{a}" for a in arrays])
@@ -773,17 +836,17 @@ def figura_resumen(comps, salida, titulo):
     for idx, val in top:
         ax4.text(idx, val, f" {val:.1f}%", ha="center", va="bottom", fontsize=9, fontweight="bold")
 
-    fig.suptitle(f"{titulo}\nBefore vs Aging comparison", fontsize=18, fontweight="bold")
+    fig.suptitle(f"{titulo}\nBefore vs {etiqueta_post} comparison", fontsize=18, fontweight="bold")
     fig.text(
         0.5,
         0.012,
         "Error bars: ±1 standard deviation across the last 3 of 5 repetitions. "
-        "RMSE: difference between the mean curves before and after aging.",
+        f"RMSE: difference between the mean curves before and after {etiqueta_post.lower()}.",
         ha="center",
         fontsize=9,
     )
     fig.tight_layout(rect=(0, 0.035, 1, 0.94))
-    ruta = salida / "01_resumen_envejecimiento.png"
+    ruta = salida / f"01_{nombre_base}.png"
     fig.savefig(ruta, dpi=DPI, bbox_inches="tight")
     plt.close(fig)
     return ruta
@@ -799,7 +862,7 @@ def plot_media(ax, media, etiqueta, estilo):
     ax.fill_between(x, y - std, y + std, alpha=0.12)
 
 
-def figura_detalle(comps, salida, titulo, top_n):
+def figura_detalle(comps, salida, titulo, top_n, nombre_base, etiqueta_post):
     validas = [c for c in comps if np.isfinite(c["cambio_curva_pct"])]
     ordenadas_por_cambio = sorted(validas, key=lambda c: c["cambio_curva_pct"], reverse=True)
     seleccion = ordenadas_por_cambio[: max(1, min(top_n, len(ordenadas_por_cambio)))]
@@ -815,7 +878,7 @@ def figura_detalle(comps, salida, titulo, top_n):
         array = c["array"]
 
         plot_media(axf, c["media_forward_antes"], "Before", "-")
-        plot_media(axf, c["media_forward_aging"], "Aging", "--")
+        plot_media(axf, c["media_forward_aging"], etiqueta_post, "--")
         axf.set_title(f"A{array} — Forward", fontweight="bold")
         axf.set_xlabel("Vfg (V)")
         axf.set_ylabel("Is (µA)")
@@ -823,7 +886,7 @@ def figura_detalle(comps, salida, titulo, top_n):
         configurar_ax(axf)
 
         plot_media(axb, c["media_backward_antes"], "Before", "-")
-        plot_media(axb, c["media_backward_aging"], "Aging", "--")
+        plot_media(axb, c["media_backward_aging"], etiqueta_post, "--")
         axb.set_title(
             f"A{array} — Backward  |  overall change ≈ {c['cambio_curva_pct']:.1f}%",
             fontweight="bold",
@@ -839,14 +902,14 @@ def figura_detalle(comps, salida, titulo, top_n):
         fontweight="bold",
     )
     fig.tight_layout(rect=(0, 0, 1, 0.95))
-    ruta = salida / "02_sensores_mas_cambiados.png"
+    ruta = salida / f"02_{nombre_base}.png"
     fig.savefig(ruta, dpi=DPI, bbox_inches="tight")
     plt.close(fig)
     return ruta
 
 
-def guardar_csv(comps, salida):
-    ruta = salida / "resumen_envejecimiento.csv"
+def guardar_csv(comps, salida, nombre_base):
+    ruta = salida / f"03_{nombre_base}.csv"
     campos = [
         "muestra",
         "electrolito",
@@ -926,7 +989,7 @@ def main():
 
     carpeta_antes = resolver_carpeta(
         args.antes,
-        "Selecciona la carpeta de medidas ANTIGUAS (antes del envejecimiento)",
+        "Selecciona la carpeta de medidas ANTIGUAS (antes de la funcionalización)",
     )
     if carpeta_antes is None:
         print("Operación cancelada.")
@@ -934,34 +997,38 @@ def main():
 
     carpeta_aging = resolver_carpeta(
         args.aging,
-        "Selecciona la carpeta de medidas AGING (medidas actuales)",
+        "Selecciona la carpeta de medidas FUNCIONALIZADAS (medidas actuales)",
         carpeta_antes,
     )
     if carpeta_aging is None:
         print("Operación cancelada.")
         raise SystemExit(0)
 
-    # Convenio del laboratorio: <chip>_aging contiene las medidas envejecidas.
+    # Convenio del laboratorio: la carpeta "post" termina en alguno de los
+    # sufijos de SUFIJOS_A_ETIQUETAS (p.ej. _aging o _funcionalizado).
     # Esto evita que una selección accidentalmente invertida produzca la
     # comparación al revés o guarde los resultados en la carpeta antigua.
     carpeta_antes, carpeta_aging, intercambiadas = detectar_orden_antes_aging(
         carpeta_antes, carpeta_aging
     )
+    etiqueta_post = etiqueta_post_para_carpeta(carpeta_aging)
     if intercambiadas:
         print(
-            "\n[INFO] Se detectó la carpeta terminada en '_aging'. "
-            "Se ha corregido automáticamente el orden Antes/Aging."
+            f"\n[INFO] Se detectó la carpeta terminada en un sufijo reconocido "
+            f"({', '.join(SUFIJOS_A_ETIQUETAS)}). Se ha corregido automáticamente "
+            f"el orden Antes/{etiqueta_post}."
         )
     elif not es_carpeta_aging(carpeta_aging):
         print(
-            "\n[AVISO] La carpeta seleccionada como AGING no termina en '_aging'. "
+            f"\n[AVISO] La carpeta seleccionada como '{etiqueta_post}' no termina en "
+            f"ninguno de los sufijos reconocidos ({', '.join(SUFIJOS_A_ETIQUETAS)}). "
             "Se respetará el orden seleccionado."
         )
 
     salida = (
         Path(args.salida).expanduser().resolve()
         if args.salida
-        else carpeta_aging / "aging_compare"
+        else Path(RUTA_SALIDA_FIJA)
     )
     salida.mkdir(parents=True, exist_ok=True)
 
@@ -988,21 +1055,19 @@ def main():
     for c in comparaciones:
         grupos[(c["muestra"], c["electrolito"])].append(c)
 
-    varias = len(grupos) > 1
     for (muestra, electrolito), comps in sorted(grupos.items()):
         comps.sort(key=lambda c: c["array"])
         titulo = titulo_grupo(muestra, electrolito)
-        salida_grupo = salida / re.sub(r"[^A-Za-z0-9._-]+", "_", titulo) if varias else salida
-        salida_grupo.mkdir(parents=True, exist_ok=True)
+        nombre_base = construir_nombre_base(muestra)
 
         print("\n" + "-" * 76)
         print(f"Comparando: {titulo}")
         print(f"Arrays comunes: {[c['array'] for c in comps]}")
         imprimir_resumen(comps)
 
-        p1 = figura_resumen(comps, salida_grupo, titulo)
-        p2 = figura_detalle(comps, salida_grupo, titulo, args.top)
-        pcsv = guardar_csv(comps, salida_grupo)
+        p1 = figura_resumen(comps, salida, titulo, nombre_base, etiqueta_post)
+        p2 = figura_detalle(comps, salida, titulo, args.top, nombre_base, etiqueta_post)
+        pcsv = guardar_csv(comps, salida, nombre_base)
 
         print(f"\nGuardado: {p1}")
         if p2:
